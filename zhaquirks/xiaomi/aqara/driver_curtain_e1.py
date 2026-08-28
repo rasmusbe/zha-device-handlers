@@ -17,16 +17,21 @@ from zigpy import types as t
 from zigpy.profiles import zha
 from zigpy.zcl import ClusterType, foundation
 from zigpy.zcl.clusters.closures import WindowCovering
-from zigpy.zcl.clusters.measurement import IlluminanceMeasurement
 from zigpy.zcl.foundation import ZCLAttributeDef
 from zigpy.zdo.types import NodeDescriptor
 
 from zhaquirks import CustomCluster
-from zhaquirks.builder import EntityType, QuirkBuilder
+from zhaquirks.builder import (
+    LIGHT_LUX,
+    EntityType,
+    QuirkBuilder,
+    ReportingConfig,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from zhaquirks.xiaomi import (
     LUMI,
     BasicCluster,
-    LocalIlluminanceMeasurementCluster,
     XiaomiAqaraE1Cluster,
     XiaomiPowerConfigurationPercent,
 )
@@ -41,6 +46,9 @@ LIGHT_LEVEL = 0x0429
 CLEAR_LIMITS = 0x00
 STORE_CLOSED_LIMIT = 0x01
 STORE_OPEN_LIMIT = 0x02
+
+# The device reports light level as 0, 1 or 2, in units of 50 lx.
+LIGHT_LEVEL_MULTIPLIER = 50
 
 
 class XiaomiAqaraDriverE1(XiaomiAqaraE1Cluster):
@@ -68,16 +76,6 @@ class XiaomiAqaraDriverE1(XiaomiAqaraE1Cluster):
             id=LIGHT_LEVEL, type=t.uint8_t, is_manufacturer_specific=True
         )
 
-    def _update_attribute(self, attrid, value):
-        if attrid == LIGHT_LEVEL:
-            # Light level value seems like it can be 0, 1, or 2.
-            # Multiply by 50 to map those values to later show: 1 lx, 50 lx, 100 lx.
-            self.endpoint.illuminance.update_attribute(
-                IlluminanceMeasurement.AttributeDefs.measured_value.id,
-                value * 50,
-            )
-        super()._update_attribute(attrid, value)
-
 
 class WindowCoveringE1(CustomCluster, WindowCovering):
     """Xiaomi Window Covering cluster that maps open/close to lift percentage."""
@@ -91,7 +89,7 @@ class WindowCoveringE1(CustomCluster, WindowCovering):
         tsn: int | t.uint8_t | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Overwrite the open/close commands to call the lift percentage command instead."""
+        """Overwrite open/close to call the lift percentage command instead."""
         if command_id == WindowCovering.ServerCommandDefs.up_open.id:
             command_id = WindowCovering.ServerCommandDefs.go_to_lift_percentage.id
             args = (0,)
@@ -120,7 +118,6 @@ class WindowCoveringE1(CustomCluster, WindowCovering):
     .replaces(XiaomiPowerConfigurationPercent)
     .replaces(WindowCoveringE1)
     .replaces(XiaomiAqaraDriverE1)
-    .adds(LocalIlluminanceMeasurementCluster)
     .removes(XiaomiAqaraDriverE1.cluster_id, cluster_type=ClusterType.Client)
     .write_attr_button(
         XiaomiAqaraDriverE1.AttributeDefs.store_position.name,
@@ -152,6 +149,21 @@ class WindowCoveringE1(CustomCluster, WindowCovering):
         entity_type=EntityType.DIAGNOSTIC,
         translation_key="limits_stored",
         fallback_name="Travel limits stored",
+    )
+    .sensor(
+        XiaomiAqaraDriverE1.AttributeDefs.light_level.name,
+        XiaomiAqaraDriverE1.cluster_id,
+        multiplier=LIGHT_LEVEL_MULTIPLIER,
+        suggested_display_precision=0,
+        device_class=SensorDeviceClass.ILLUMINANCE,
+        state_class=SensorStateClass.MEASUREMENT,
+        unit=LIGHT_LUX,
+        reporting_config=ReportingConfig(
+            min_interval=60, max_interval=3600, reportable_change=1
+        ),
+        unique_id_suffix="light_level",
+        translation_key="light_level",
+        fallback_name="Light level",
     )
     .switch(
         XiaomiAqaraDriverE1.AttributeDefs.hand_open.name,

@@ -49,6 +49,7 @@ from zhaquirks.builder.metadata import (
     BinarySensorMetadata,
     SwitchMetadata,
     WriteAttributeButtonMetadata,
+    ZCLSensorMetadata,
 )
 from zhaquirks.const import (
     ATTR_ID,
@@ -86,6 +87,8 @@ import zhaquirks.xiaomi.aqara.cube_aqgl01
 import zhaquirks.xiaomi.aqara.driver_curtain_e1
 from zhaquirks.xiaomi.aqara.driver_curtain_e1 import (
     CLEAR_LIMITS,
+    LIGHT_LEVEL,
+    LIGHT_LEVEL_MULTIPLIER,
     STORE_CLOSED_LIMIT,
     STORE_OPEN_LIMIT,
     XiaomiAqaraDriverE1,
@@ -2029,48 +2032,21 @@ async def test_xiaomi_e1_driver_commands(
             assert request_mock.call_args[0][3] == value
 
 
-@pytest.mark.parametrize(
-    "device_level, converted_level",
-    [
-        (0, 0),
-        (1, 50),
-        (2, 100),
-    ],
-)
-async def test_xiaomi_e1_driver_light_level(
-    zigpy_device_from_v2_quirk, device_level, converted_level
-):
-    """Test Aqara E1 driver light level cluster conversion."""
+async def test_xiaomi_e1_driver_light_level(zigpy_device_from_v2_quirk):
+    """Test Aqara E1 driver light level is exposed on the manufacturer cluster."""
     device = zigpy_device_from_v2_quirk(LUMI, "lumi.curtain.agl001")
 
     opple_cluster = device.endpoints[1].opple_cluster
     opple_listener = ClusterListener(opple_cluster)
-    opple_zcl_iilluminance_id = 0x0429
 
-    illuminance_cluster = device.endpoints[1].illuminance
-    illuminance_listener = ClusterListener(illuminance_cluster)
-    zcl_iilluminance_id = IlluminanceMeasurement.AttributeDefs.measured_value.id
+    opple_cluster.update_attribute(LIGHT_LEVEL, 2)
 
-    # send motion and illuminance report 10
-    opple_cluster.update_attribute(opple_zcl_iilluminance_id, device_level)
-
-    # confirm manufacturer specific attribute report
     assert len(opple_listener.attribute_updates) == 1
-    assert opple_listener.attribute_updates[0][0] == opple_zcl_iilluminance_id
-    assert opple_listener.attribute_updates[0][1] == device_level
+    assert opple_listener.attribute_updates[0][0] == LIGHT_LEVEL
+    assert opple_listener.attribute_updates[0][1] == 2
 
-    # confirm illuminance report (with conversion)
-    assert len(illuminance_listener.attribute_updates) == 1
-    assert illuminance_listener.attribute_updates[0][0] == zcl_iilluminance_id
-
-    assert (
-        device_level == 0
-        and converted_level == 0
-        or (
-            illuminance_listener.attribute_updates[0][1]
-            == 10000 * math.log10(converted_level) + 1
-        )
-    )
+    # the illuminance cluster is gone, the sensor now reads the source attribute
+    assert not hasattr(device.endpoints[1], "illuminance")
 
 
 def test_aqara_curtain_agl001_entities(zigpy_device_from_v2_quirk):
@@ -2078,7 +2054,7 @@ def test_aqara_curtain_agl001_entities(zigpy_device_from_v2_quirk):
     device = zigpy_device_from_v2_quirk(LUMI, "lumi.curtain.agl001")
     entry = DEVICE_REGISTRY.match_entry(device)
     entity_metadata = entry.zha_device_factory.quirk_definition.entity_metadata
-    assert len(entity_metadata) == 6
+    assert len(entity_metadata) == 7
 
     by_suffix = {em.resolved_unique_id_suffix: em for em in entity_metadata}
 
@@ -2098,6 +2074,11 @@ def test_aqara_curtain_agl001_entities(zigpy_device_from_v2_quirk):
     open_button = by_suffix["limit_set_open"]
     assert isinstance(open_button, WriteAttributeButtonMetadata)
     assert open_button.attribute_value == STORE_OPEN_LIMIT
+
+    light_level = by_suffix["light_level"]
+    assert isinstance(light_level, ZCLSensorMetadata)
+    assert light_level.multiplier == LIGHT_LEVEL_MULTIPLIER
+    assert light_level.reporting_config is not None
 
     assert isinstance(by_suffix["hand_open"], SwitchMetadata)
     assert isinstance(by_suffix["hooks_lock"], SwitchMetadata)
